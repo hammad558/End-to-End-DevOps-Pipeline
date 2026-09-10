@@ -1,125 +1,77 @@
-@Library('Shared') _
+// CD pipeline: bump the image tag in the Kubernetes manifests and push.
+// Argo CD watches the kubernetes/ directory and reconciles the cluster.
+// This job never talks to the cluster directly; git is the only interface.
+
 pipeline {
-    agent {label 'Node'}
-    
+    agent { label 'jenkins-worker' }
+
     parameters {
-        string(name: 'FRONTEND_DOCKER_TAG', defaultValue: '', description: 'Frontend Docker tag of the image built by the CI job')
-        string(name: 'BACKEND_DOCKER_TAG', defaultValue: '', description: 'Backend Docker tag of the image built by the CI job')
+        string(name: 'IMAGE_TAG', defaultValue: '', description: 'Tag produced by the CI job (build-number-gitsha)')
+    }
+
+    environment {
+        REPO_URL       = 'https://github.com/hammad558/End-to-End-DevOps-Pipeline.git'
+        DOCKERHUB_USER = 'hammad558'
+        NOTIFY_EMAIL   = 'hammadwaraich888@gmail.com'
+        GIT_AUTHOR     = 'jenkins-ci'
     }
 
     stages {
-        stage("Workspace cleanup"){
-            steps{
-                script{
-                    cleanWs()
-                }
-            }
-        }
-        
-        stage('Git: Code Checkout') {
+        stage('Validate') {
             steps {
-                script{
-                    code_checkout("https://github.com/LondheShubham153/Wanderlust-Mega-Project.git","main")
+                script {
+                    if (!params.IMAGE_TAG?.trim()) { error('IMAGE_TAG is required') }
                 }
             }
         }
-        
-        stage('Verify: Docker Image Tags') {
+
+        stage('Checkout') {
             steps {
-                script{
-                    echo "FRONTEND_DOCKER_TAG: ${params.FRONTEND_DOCKER_TAG}"
-                    echo "BACKEND_DOCKER_TAG: ${params.BACKEND_DOCKER_TAG}"
+                cleanWs()
+                git url: env.REPO_URL, branch: 'main'
+            }
+        }
+
+        stage('Update manifests') {
+            steps {
+                dir('kubernetes') {
+                    sh """
+                      sed -i -E 's#(${DOCKERHUB_USER}/wanderlust-backend):[^"[:space:]]+#\\1:${params.IMAGE_TAG}#'  backend.yaml
+                      sed -i -E 's#(${DOCKERHUB_USER}/wanderlust-frontend):[^"[:space:]]+#\\1:${params.IMAGE_TAG}#' frontend.yaml
+                      grep -n 'image:' backend.yaml frontend.yaml
+                    """
                 }
             }
         }
-        
-        
-        stage("Update: Kubernetes manifests"){
-            steps{
-                script{
-                    dir('kubernetes'){
-                        sh """
-                            sed -i -e s/wanderlust-backend-beta.*/wanderlust-backend-beta:${params.BACKEND_DOCKER_TAG}/g backend.yaml
-                        """
-                    }
-                    
-                    dir('kubernetes'){
-                        sh """
-                            sed -i -e s/wanderlust-frontend-beta.*/wanderlust-frontend-beta:${params.FRONTEND_DOCKER_TAG}/g frontend.yaml
-                        """
-                    }
-                    
-                }
-            }
-        }
-        
-        stage("Git: Code update and push to GitHub"){
-            steps{
-                script{
-                    withCredentials([gitUsernamePassword(credentialsId: 'Github-cred', gitToolName: 'Default')]) {
-                        sh '''
-                        echo "Checking repository status: "
-                        git status
-                    
-                        echo "Adding changes to git: "
-                        git add .
-                        
-                        echo "Commiting changes: "
-                        git commit -m "Updated environment variables"
-                        
-                        echo "Pushing changes to github: "
-                        git push https://github.com/LondheShubham153/Wanderlust-Mega-Project.git main
+
+        stage('Commit and push') {
+            steps {
+                withCredentials([usernamePassword(credentialsId: 'github-cred',
+                                                  usernameVariable: 'GH_USER',
+                                                  passwordVariable: 'GH_TOKEN')]) {
+                    sh '''
+                      git config user.name  "${GIT_AUTHOR}"
+                      git config user.email "${NOTIFY_EMAIL}"
+                      git add kubernetes/backend.yaml kubernetes/frontend.yaml
+                      if git diff --cached --quiet; then echo "No manifest change"; exit 0; fi
+                      git commit -m "deploy: wanderlust ${IMAGE_TAG}"
+                      git push "https://${GH_USER}:${GH_TOKEN}@github.com/hammad558/End-to-End-DevOps-Pipeline.git" HEAD:main
                     '''
-                    }
                 }
             }
         }
     }
-  post {
+
+    post {
         success {
-            script {
-                emailext attachLog: true,
-                from: 'trainwithshubham@gmail.com',
-                subject: "Wanderlust Application has been updated and deployed - '${currentBuild.result}'",
-                body: """
-                    <html>
-                    <body>
-                        <div style="background-color: #FFA07A; padding: 10px; margin-bottom: 10px;">
-                            <p style="color: black; font-weight: bold;">Project: ${env.JOB_NAME}</p>
-                        </div>
-                        <div style="background-color: #90EE90; padding: 10px; margin-bottom: 10px;">
-                            <p style="color: black; font-weight: bold;">Build Number: ${env.BUILD_NUMBER}</p>
-                        </div>
-                        <div style="background-color: #87CEEB; padding: 10px; margin-bottom: 10px;">
-                            <p style="color: black; font-weight: bold;">URL: ${env.BUILD_URL}</p>
-                        </div>
-                    </body>
-                    </html>
-            """,
-            to: 'trainwithshubham@gmail.com',
-            mimeType: 'text/html'
-            }
+            emailext to: env.NOTIFY_EMAIL,
+                     subject: "[wanderlust] deployed ${params.IMAGE_TAG}",
+                     body: "Manifests updated to ${params.IMAGE_TAG}. Argo CD will sync within its polling interval.\n\n${env.BUILD_URL}"
         }
-      failure {
-            script {
-                emailext attachLog: true,
-                from: 'trainwithshubham@gmail.com',
-                subject: "Wanderlust Application build failed - '${currentBuild.result}'",
-                body: """
-                    <html>
-                    <body>
-                        <div style="background-color: #FFA07A; padding: 10px; margin-bottom: 10px;">
-                            <p style="color: black; font-weight: bold;">Project: ${env.JOB_NAME}</p>
-                        </div>
-                        <div style="background-color: #90EE90; padding: 10px; margin-bottom: 10px;">
-                            <p style="color: black; font-weight: bold;">Build Number: ${env.BUILD_NUMBER}</p>
-                        </div>
-                    </body>
-                    </html>
-            """,
-            to: 'trainwithshubham@gmail.com',
-            mimeType: 'text/html'
-            }
+        failure {
+            emailext to: env.NOTIFY_EMAIL, attachLog: true,
+                     subject: "[wanderlust] CD FAILED for ${params.IMAGE_TAG}",
+                     body: "See attached log.\n\n${env.BUILD_URL}"
         }
     }
 }
