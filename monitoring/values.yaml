@@ -1,0 +1,28 @@
+# kube-prometheus-stack values. Small footprint for a 2-node cluster; scale up for real traffic.
+grafana:
+  adminPassword: "change-me-after-first-login"
+  service:
+    type: ClusterIP
+  defaultDashboardsEnabled: true
+  sidecar:
+    dashboards:
+      enabled: true
+prometheus:
+  prometheusSpec:
+    retention: 7d
+    resources:
+      requests: { cpu: 200m, memory: 512Mi }
+      limits:   { cpu: 1,    memory: 2Gi }
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: gp2
+          accessModes: ["ReadWriteOnce"]
+          resources: { requests: { storage: 20Gi } }
+alertmanager:
+  enabled: true
+  config:
+    route:
+      receiver: "null"          # wire Slack/email here
+    receivers:
+      - name: "null"
