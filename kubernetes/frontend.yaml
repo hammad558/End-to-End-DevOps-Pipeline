@@ -1,38 +1,36 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: frontend-deployment
+  name: frontend
   namespace: wanderlust
-  labels:
-    app: frontend
+  labels: { app: frontend }
 spec:
-  replicas: 1
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxSurge: 1, maxUnavailable: 0 }
   selector:
-    matchLabels:
-      app: frontend
+    matchLabels: { app: frontend }
   template:
     metadata:
-      name: frontend
-      labels:
-        app: frontend
+      labels: { app: frontend }
     spec:
       containers:
         - name: frontend
-          image: trainwithshubham/wanderlust-frontend-beta:v2.2
-          ports:
-            - containerPort: 5173
+          image: hammad558/wanderlust-frontend:0-initial
+          ports: [{ containerPort: 80 }]
+          resources:
+            requests: { cpu: 50m,  memory: 64Mi }
+            limits:   { cpu: 200m, memory: 256Mi }
+          readinessProbe:
+            httpGet: { path: /, port: 80 }
+            periodSeconds: 10
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: frontend-service
+  name: frontend
   namespace: wanderlust
 spec:
-  type: NodePort
-  selector:
-    app: frontend
-  ports:
-    - port: 5173
-      targetPort: 5173
-      protocol: TCP
-      nodePort: 31000
+  selector: { app: frontend }
+  ports: [{ port: 80, targetPort: 80 }]

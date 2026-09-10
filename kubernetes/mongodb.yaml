@@ -1,44 +1,44 @@
 apiVersion: apps/v1
-kind: Deployment
+kind: StatefulSet
 metadata:
-  name: mongo-deployment
+  name: mongo
   namespace: wanderlust
-  labels:
-    app: mongo
 spec:
+  serviceName: mongo
   replicas: 1
   selector:
-    matchLabels:
-      app: mongo
+    matchLabels: { app: mongo }
   template:
     metadata:
-      name: mongo
-      labels:
-        app: mongo
+      labels: { app: mongo }
     spec:
       containers:
         - name: mongo
-          image: mongo
-          ports:
-            - containerPort: 27017
+          image: mongo:7.0
+          ports: [{ containerPort: 27017 }]
+          resources:
+            requests: { cpu: 250m, memory: 512Mi }
+            limits:   { cpu: 1,    memory: 1Gi }
+          readinessProbe:
+            exec: { command: ["mongosh", "--quiet", "--eval", "db.runCommand({ping:1}).ok"] }
+            initialDelaySeconds: 10
+            periodSeconds: 10
           volumeMounts:
-            - name: mongo-storage
+            - name: data
               mountPath: /data/db
-      volumes:
-        - name: mongo-storage
-          persistentVolumeClaim:
-            claimName: mongo-pvc
-
+  volumeClaimTemplates:
+    - metadata: { name: data }
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: gp2        # EKS default; use gp3 if the EBS CSI driver is installed
+        resources: { requests: { storage: 10Gi } }
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: mongo-service
+  name: mongo
   namespace: wanderlust
 spec:
-  selector:
-    app: mongo
-  ports:
-    - port: 27017
-      targetPort: 27017
-      protocol: TCP
+  clusterIP: None
+  selector: { app: mongo }
+  ports: [{ port: 27017, targetPort: 27017 }]

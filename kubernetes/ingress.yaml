@@ -1,0 +1,23 @@
+# One hostname, path-based routing. /api -> backend, everything else -> frontend.
+# Requires ingress-nginx (installed by bootstrap/install.sh).
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: wanderlust
+  namespace: wanderlust
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: wanderlust.example.com     # point a DNS record at the ingress-nginx load balancer
+      http:
+        paths:
+          - path: /api
+            pathType: Prefix
+            backend:
+              service: { name: backend, port: { number: 8080 } }
+          - path: /
+            pathType: Prefix
+            backend:
+              service: { name: frontend, port: { number: 80 } }
