@@ -1,0 +1,19 @@
+# secrets and local env
+.env
+.env.*
+!.env.sample
+kubernetes/secret.yaml
+# terraform
+terraform/.terraform/
+terraform/*.tfstate
+terraform/*.tfstate.*
+terraform/*.tfvars
+!terraform/terraform.tfvars.example
+terraform/.terraform.lock.hcl
+# node
+node_modules/
+dist/
+coverage/
+# scan output
+trivy-*.txt
+dependency-check-report.*

@@ -1,39 +1,48 @@
-version: "3.8"
+# Local development only. Production runs on EKS via kubernetes/ and Argo CD.
+# Copy backend/.env.sample to backend/.env and fill it in before starting.
 services:
-  mongodb:
-    container_name: mongo-service
-    image: mongo:latest
+  mongo:
+    image: mongo:7.0
+    container_name: wanderlust-mongo
     volumes:
-      - ./backend/data:/data
+      - mongo-data:/data/db
     ports:
       - "27017:27017"
-
-  backend:
-    container_name: backend
-    build: ./backend
-    env_file:
-      - ./backend/.env.docker
-    ports:
-      - "31100:8080"
-    depends_on:
-      - mongodb
-
-  frontend:
-    container_name: frontend
-    build: ./frontend
-    env_file:
-      - ./frontend/.env.docker
-    ports:
-      - "5173:5173"
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.runCommand({ping:1}).ok"]
+      interval: 10s
+      retries: 5
 
   redis:
-    container_name: redis-service
-    restart: unless-stopped
-    image: redis:7.0.5-alpine 
+    image: redis:7.2-alpine
+    container_name: wanderlust-redis
+    command: ["--save", "", "--appendonly", "no"]
     expose:
-        - 6379
+      - "6379"
+
+  backend:
+    build: ./backend
+    container_name: wanderlust-backend
+    env_file:
+      - ./backend/.env
+    ports:
+      - "8080:8080"
     depends_on:
-      - mongodb
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_started
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        VITE_API_PATH: "http://localhost:8080"
+    container_name: wanderlust-frontend
+    ports:
+      - "5173:80"
+    depends_on:
+      - backend
 
 volumes:
-  data:
+  mongo-data:

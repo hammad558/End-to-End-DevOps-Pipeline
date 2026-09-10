@@ -1,4 +1,5 @@
 {
+  "description": "Local dev helper scripts. See README for the deployment pipeline.",
   "dependencies": {
     "concurrently": "^8.2.2"
   },
