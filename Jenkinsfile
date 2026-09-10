@@ -1,127 +1,129 @@
-@Library('Shared') _
+// CI pipeline: scan -> analyse -> build -> push -> hand off to CD.
+// Image tags are derived from the commit, never typed by hand.
+
 pipeline {
-    agent {label 'Node'}
-    
-    environment{
-        SONAR_HOME = tool "Sonar"
+    agent { label 'jenkins-worker' }
+
+    options {
+        timestamps()
+        disableConcurrentBuilds()
+        buildDiscarder(logRotator(numToKeepStr: '20'))
     }
-    
-    parameters {
-        string(name: 'FRONTEND_DOCKER_TAG', defaultValue: '', description: 'Setting docker image for latest push')
-        string(name: 'BACKEND_DOCKER_TAG', defaultValue: '', description: 'Setting docker image for latest push')
+
+    environment {
+        REPO_URL        = 'https://github.com/hammad558/End-to-End-DevOps-Pipeline.git'
+        DOCKERHUB_USER  = 'hammad558'
+        BACKEND_IMAGE   = "${DOCKERHUB_USER}/wanderlust-backend"
+        FRONTEND_IMAGE  = "${DOCKERHUB_USER}/wanderlust-frontend"
+        SONAR_HOME      = tool 'sonar-scanner'
+        SONAR_PROJECT   = 'wanderlust'
     }
-    
+
     stages {
-        stage("Validate Parameters") {
+        stage('Checkout') {
             steps {
+                cleanWs()
+                git url: env.REPO_URL, branch: 'main'
                 script {
-                    if (params.FRONTEND_DOCKER_TAG == '' || params.BACKEND_DOCKER_TAG == '') {
-                        error("FRONTEND_DOCKER_TAG and BACKEND_DOCKER_TAG must be provided.")
-                    }
+                    env.GIT_SHORT = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
+                    env.IMAGE_TAG = "${env.BUILD_NUMBER}-${env.GIT_SHORT}"
                 }
+                echo "Image tag for this build: ${env.IMAGE_TAG}"
             }
         }
-        stage("Workspace cleanup"){
-            steps{
-                script{
-                    cleanWs()
-                }
-            }
-        }
-        
-        stage('Git: Code Checkout') {
+
+        stage('Trivy: filesystem scan') {
             steps {
-                script{
-                    code_checkout("https://github.com/LondheShubham153/Wanderlust-Mega-Project.git","main")
-                }
+                sh '''
+                  trivy fs --scanners vuln,secret,misconfig \
+                    --severity HIGH,CRITICAL --exit-code 0 \
+                    --format table -o trivy-fs-report.txt .
+                '''
             }
         }
-        
-        stage("Trivy: Filesystem scan"){
-            steps{
-                script{
-                    trivy_scan()
+
+        stage('OWASP: dependency check') {
+            steps {
+                dependencyCheck additionalArguments: '--scan ./backend --scan ./frontend --format ALL --disableYarnAudit',
+                                odcInstallation: 'owasp-dependency-check'
+                dependencyCheckPublisher pattern: '**/dependency-check-report.xml'
+            }
+        }
+
+        stage('SonarQube: analysis') {
+            steps {
+                withSonarQubeEnv('sonarqube') {
+                    sh """
+                      ${SONAR_HOME}/bin/sonar-scanner \
+                        -Dsonar.projectName=${SONAR_PROJECT} \
+                        -Dsonar.projectKey=${SONAR_PROJECT} \
+                        -Dsonar.sources=backend,frontend/src \
+                        -Dsonar.exclusions=**/node_modules/**,**/dist/**
+                    """
                 }
             }
         }
 
-        stage("OWASP: Dependency check"){
-            steps{
-                script{
-                    owasp_dependency()
+        stage('SonarQube: quality gate') {
+            steps {
+                timeout(time: 5, unit: 'MINUTES') {
+                    waitForQualityGate abortPipeline: true
                 }
             }
         }
-        
-        stage("SonarQube: Code Analysis"){
-            steps{
-                script{
-                    sonarqube_analysis("Sonar","wanderlust","wanderlust")
-                }
-            }
-        }
-        
-        stage("SonarQube: Code Quality Gates"){
-            steps{
-                script{
-                    sonarqube_code_quality()
-                }
-            }
-        }
-        
-        stage('Exporting environment variables') {
-            parallel{
-                stage("Backend env setup"){
+
+        stage('Docker: build') {
+            parallel {
+                stage('backend') {
                     steps {
-                        script{
-                            dir("Automations"){
-                                sh "bash updatebackendnew.sh"
-                            }
+                        dir('backend') {
+                            sh "docker build -t ${BACKEND_IMAGE}:${IMAGE_TAG} ."
                         }
                     }
                 }
-                
-                stage("Frontend env setup"){
+                stage('frontend') {
                     steps {
-                        script{
-                            dir("Automations"){
-                                sh "bash updatefrontendnew.sh"
-                            }
+                        dir('frontend') {
+                            sh "docker build -t ${FRONTEND_IMAGE}:${IMAGE_TAG} ."
                         }
                     }
                 }
             }
         }
-        
-        stage("Docker: Build Images"){
-            steps{
-                script{
-                        dir('backend'){
-                            docker_build("wanderlust-backend-beta","${params.BACKEND_DOCKER_TAG}","trainwithshubham")
-                        }
-                    
-                        dir('frontend'){
-                            docker_build("wanderlust-frontend-beta","${params.FRONTEND_DOCKER_TAG}","trainwithshubham")
-                        }
-                }
+
+        stage('Trivy: image scan') {
+            steps {
+                sh """
+                  trivy image --severity CRITICAL --exit-code 1 --ignore-unfixed ${BACKEND_IMAGE}:${IMAGE_TAG}
+                  trivy image --severity CRITICAL --exit-code 1 --ignore-unfixed ${FRONTEND_IMAGE}:${IMAGE_TAG}
+                """
             }
         }
-        
-        stage("Docker: Push to DockerHub"){
-            steps{
-                script{
-                    docker_push("wanderlust-backend-beta","${params.BACKEND_DOCKER_TAG}","trainwithshubham") 
-                    docker_push("wanderlust-frontend-beta","${params.FRONTEND_DOCKER_TAG}","trainwithshubham")
+
+        stage('Docker: push') {
+            steps {
+                withCredentials([usernamePassword(credentialsId: 'dockerhub-cred',
+                                                  usernameVariable: 'DH_USER',
+                                                  passwordVariable: 'DH_PASS')]) {
+                    sh '''
+                      echo "$DH_PASS" | docker login -u "$DH_USER" --password-stdin
+                      docker push ${BACKEND_IMAGE}:${IMAGE_TAG}
+                      docker push ${FRONTEND_IMAGE}:${IMAGE_TAG}
+                      docker logout
+                    '''
                 }
             }
         }
     }
-    post{
-        success{
-            archiveArtifacts artifacts: '*.xml', followSymlinks: false
-            build job: "Wanderlust-CD", parameters: [
-                string(name: 'FRONTEND_DOCKER_TAG', value: "${params.FRONTEND_DOCKER_TAG}"),
-                string(name: 'BACKEND_DOCKER_TAG', value: "${params.BACKEND_DOCKER_TAG}")
+
+    post {
+        always {
+            archiveArtifacts artifacts: 'trivy-fs-report.txt, **/dependency-check-report.html', allowEmptyArchive: true
+            sh 'docker image prune -f || true'
+        }
+        success {
+            build job: 'wanderlust-cd', wait: false, parameters: [
+                string(name: 'IMAGE_TAG', value: env.IMAGE_TAG)
             ]
         }
     }
